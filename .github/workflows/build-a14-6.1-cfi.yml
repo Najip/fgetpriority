@@ -1,0 +1,42 @@
+name: Test android14-6.1 - AOSP Clang CFI
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and inspect in original DDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p output
+          docker pull ghcr.io/ylarod/ddk:android14-6.1
+          docker image inspect ghcr.io/ylarod/ddk:android14-6.1 > output/image.json
+          docker run --rm --platform linux/amd64 --entrypoint /bin/bash -v "$GITHUB_WORKSPACE:/build" -w /build ghcr.io/ylarod/ddk:android14-6.1 -c '
+            set -euo pipefail
+            export PATH=/opt/ddk/clang/clang-r487747c/bin:$PATH
+            export ARCH=arm64 LLVM=1 LLVM_IAS=1 CROSS_COMPILE=aarch64-linux-gnu-
+            KDIR=/opt/ddk/kdir/android14-6.1
+            test -x /opt/ddk/clang/clang-r487747c/bin/clang
+            clang --version | tee output/compiler.txt
+            cp "$KDIR/.config" output/kernel.config
+            grep -qx CONFIG_CFI_CLANG=y "$KDIR/.config"
+            make -C "$KDIR" M=/build/kernel CONFIG_FGETPRIORITY=m clean
+            make -C "$KDIR" M=/build/kernel CONFIG_FGETPRIORITY=m -j2 V=1 modules 2>&1 | tee output/build.log
+            test -s kernel/fgetpriority.ko
+            llvm-nm -a kernel/main.o > output/main-symbols.txt
+            grep -E "__kcfi_typeid_.*(init_module|fgetpriority_init)" output/main-symbols.txt
+            llvm-readelf -a kernel/fgetpriority.ko > output/elf.txt
+            llvm-objdump -d kernel/fgetpriority.ko > output/disassembly.txt
+            cp kernel/fgetpriority.ko output/android14-6.1_arm64_fgetpriority.ko
+          '
+      - name: Upload diagnostics and candidate KO
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android14-6.1-cfi-test
+          path: output/
+          if-no-files-found: error
