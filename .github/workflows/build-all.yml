@@ -1,0 +1,138 @@
+name: Build fgetpriority - selectable KMI
+
+on:
+  workflow_dispatch:
+    inputs:
+      android12_5_10:
+        description: "Build android12-5.10"
+        type: boolean
+        default: false
+      android13_5_10:
+        description: "Build android13-5.10"
+        type: boolean
+        default: false
+      android13_5_15:
+        description: "Build android13-5.15"
+        type: boolean
+        default: false
+      android14_5_15:
+        description: "Build android14-5.15"
+        type: boolean
+        default: false
+      android14_6_1:
+        description: "Build android14-6.1"
+        type: boolean
+        default: false
+      android15_6_6:
+        description: "Build android15-6.6"
+        type: boolean
+        default: false
+      android16_6_12:
+        description: "Build android16-6.12"
+        type: boolean
+        default: false
+      android17_6_18:
+        description: "Build android17-6.18"
+        type: boolean
+        default: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          A12_5_10: ${{ inputs.android12_5_10 }}
+          A13_5_10: ${{ inputs.android13_5_10 }}
+          A13_5_15: ${{ inputs.android13_5_15 }}
+          A14_5_15: ${{ inputs.android14_5_15 }}
+          A14_6_1: ${{ inputs.android14_6_1 }}
+          A15_6_6: ${{ inputs.android15_6_6 }}
+          A16_6_12: ${{ inputs.android16_6_12 }}
+          A17_6_18: ${{ inputs.android17_6_18 }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          selected = []
+          pairs = [
+              ("A12_5_10", "android12-5.10"),
+              ("A13_5_10", "android13-5.10"),
+              ("A13_5_15", "android13-5.15"),
+              ("A14_5_15", "android14-5.15"),
+              ("A14_6_1", "android14-6.1"),
+              ("A15_6_6", "android15-6.6"),
+              ("A16_6_12", "android16-6.12"),
+              ("A17_6_18", "android17-6.18"),
+          ]
+          for key, kmi in pairs:
+              if os.environ[key].lower() == "true":
+                  selected.append(kmi)
+          if not selected:
+              raise SystemExit("Select at least one KMI before running this workflow.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("matrix=" + json.dumps({"kmi": selected}) + "\n")
+          PY
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install droid-ddk
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/feicong/droid-ddk/main/host/install.sh | sudo bash
+
+      - name: Build ${{ matrix.kmi }}
+        run: |
+          set -euxo pipefail
+          dddk pull --target "${{ matrix.kmi }}"
+          dddk build --target "${{ matrix.kmi }}" --module "$GITHUB_WORKSPACE/kernel" -- -j"$(nproc)" V=1
+
+          KO_FILE="$(find "$GITHUB_WORKSPACE" -type f -name 'fgetpriority.ko' -print -quit)"
+          test -n "$KO_FILE"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$KO_FILE" "$GITHUB_WORKSPACE/output/${{ matrix.kmi }}_arm64_fgetpriority.ko"
+
+      - name: Upload ${{ matrix.kmi }} kernel module
+        uses: actions/upload-artifact@v4
+        with:
+          name: ko-${{ matrix.kmi }}
+          path: output/*.ko
+          if-no-files-found: error
+
+  package:
+    needs: build
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download built kernel modules
+        uses: actions/download-artifact@v5
+        with:
+          pattern: ko-*
+          merge-multiple: true
+          path: module/ko
+
+      - name: Package Magisk module
+        run: |
+          set -euxo pipefail
+          test "$(find module/ko -type f -name '*.ko' | wc -l)" -gt 0
+          cd module
+          VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
+          zip -r "fgetpriority_${VERSION}.zip" .
+
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: fgetpriority-module-zip
+          path: module/fgetpriority_*.zip
+          if-no-files-found: error
