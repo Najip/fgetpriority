@@ -93,7 +93,7 @@ jobs:
         run: |
           set -euxo pipefail
           dddk pull --target "${{ matrix.kmi }}"
-          dddk build --target "${{ matrix.kmi }}" --module "$GITHUB_WORKSPACE/kernel" -- -j"$(nproc)" V=1
+          dddk build --target "${{ matrix.kmi }}" --module "$GITHUB_WORKSPACE/kernel" -- CONFIG_FGETPRIORITY=m -j"$(nproc)" V=1
 
           KO_FILE="$(find "$GITHUB_WORKSPACE" -type f -name 'fgetpriority.ko' -print -quit)"
           test -n "$KO_FILE"
