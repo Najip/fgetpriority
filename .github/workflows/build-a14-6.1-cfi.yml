@@ -27,12 +27,44 @@ jobs:
             make -C "$KDIR" M=/build/kernel CONFIG_FGETPRIORITY=m clean
             make -C "$KDIR" M=/build/kernel CONFIG_FGETPRIORITY=m -j2 V=1 modules 2>&1 | tee output/build.log
             test -s kernel/fgetpriority.ko
+            cp kernel/fgetpriority.ko output/android14-6.1_arm64_fgetpriority.ko
             llvm-nm -a kernel/main.o > output/main-symbols.txt
-            grep -E "__kcfi_typeid_.*(init_module|fgetpriority_init)" output/main-symbols.txt
             llvm-readelf -a kernel/fgetpriority.ko > output/elf.txt
             llvm-objdump -d kernel/fgetpriority.ko > output/disassembly.txt
-            cp kernel/fgetpriority.ko output/android14-6.1_arm64_fgetpriority.ko
           '
+      - name: Check initializer KCFI type against device crash log
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import struct
+          p = Path('output/android14-6.1_arm64_fgetpriority.ko')
+          b = p.read_bytes()
+          assert b[:6] == b'\x7fELF\x02\x01', 'Expected ELF64 little-endian'
+          h = struct.unpack_from('<16sHHIQQQIHHHHHH', b)
+          sections = [struct.unpack_from('<IIQQQQIIQQ', b, h[6] + i*h[11]) for i in range(h[12])]
+          found = []
+          for s in sections:
+              if s[1] != 2:
+                  continue
+              t = sections[s[6]]
+              strings = b[t[4]:t[4]+t[5]]
+              for off in range(s[4], s[4]+s[5], s[9]):
+                  n, info, other, index, value, size = struct.unpack_from('<IBBHQQ', b, off)
+                  name = strings[n:strings.find(b'\0', n)]
+                  if name != b'init_module':
+                      continue
+                  assert 0 < index < len(sections), 'Invalid initializer section'
+                  target = sections[index]
+                  assert 4 <= value < target[5], 'Missing initializer type prefix'
+                  word = struct.unpack_from('<I', b, target[4]+value-4)[0]
+                  found.append(word)
+          expected = 0x36b1c5a6
+          report = 'Expected initializer KCFI type: 0x%08x\nObserved: %s\nThis check alone does not establish device compatibility.\n' % (expected, ', '.join('0x%08x' % x for x in found))
+          Path('output/cfi-check.txt').write_text(report)
+          print(report)
+          assert len(found) == 1 and found[0] == expected, 'Initializer KCFI type mismatch; do not load this candidate'
+          PY
       - name: Upload diagnostics and candidate KO
         if: always()
         uses: actions/upload-artifact@v4
