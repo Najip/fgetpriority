@@ -1,0 +1,64 @@
+name: Build fgetpriority - all KMI
+
+on:
+  workflow_dispatch:
+
+env:
+  KMIS: >-
+    android12-5.10
+    android13-5.10
+    android13-5.15
+    android14-5.15
+    android14-6.1
+    android15-6.6
+    android16-6.12
+    android17-6.18
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install droid-ddk
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/feicong/droid-ddk/main/host/install.sh | sudo bash
+
+      - name: Build every KMI
+        shell: bash
+        run: |
+          set -euxo pipefail
+          KO_DIR="$GITHUB_WORKSPACE/module/ko"
+          mkdir -p "$KO_DIR"
+
+          for KMI in $KMIS; do
+            echo "Building $KMI"
+            dddk pull --target "$KMI"
+            dddk build --target "$KMI" --module "$GITHUB_WORKSPACE/kernel" -- -j"$(nproc)" V=1
+
+            KO_FILE="$(find "$GITHUB_WORKSPACE" -type f -name 'fgetpriority.ko' -print -quit)"
+            test -n "$KO_FILE"
+            cp "$KO_FILE" "$KO_DIR/${KMI}_arm64_fgetpriority.ko"
+            rm -f "$KO_FILE"
+          done
+
+      - name: Package Magisk module
+        run: |
+          cd module
+          VERSION="$(grep '^version=' module.prop | cut -d= -f2)"
+          zip -r "fgetpriority_${VERSION}.zip" .
+
+      - name: Upload module zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: fgetpriority-module-zip
+          path: module/fgetpriority_*.zip
+          if-no-files-found: error
+
+      - name: Upload all kernel modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: fgetpriority-all-ko
+          path: module/ko/*.ko
+          if-no-files-found: error
